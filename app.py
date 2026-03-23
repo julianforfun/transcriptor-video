@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import subprocess
 import threading
 from flask import Flask, request, jsonify, render_template
 from openai import OpenAI
@@ -44,10 +45,16 @@ def ver_estado():
 
 
 def _procesar(ruta_video):
+    ruta_audio = ruta_video + "_comprimido.mp3"
     try:
-        estado["progreso"] = "transcribiendo..."
+        estado["progreso"] = "comprimiendo audio..."
+        subprocess.run(
+            ["ffmpeg", "-i", ruta_video, "-vn", "-ar", "16000", "-ac", "1", "-b:a", "32k", ruta_audio, "-y"],
+            capture_output=True
+        )
 
-        with open(ruta_video, "rb") as f:
+        estado["progreso"] = "transcribiendo..."
+        with open(ruta_audio, "rb") as f:
             resultado = client.audio.transcriptions.create(
                 model="whisper-1",
                 file=f,
@@ -55,15 +62,16 @@ def _procesar(ruta_video):
 
         texto = resultado.text.strip()
 
-        if os.path.exists(ruta_video):
-            os.remove(ruta_video)
-
         estado["progreso"] = "listo"
         estado["texto"] = texto
 
     except Exception as e:
         estado["progreso"] = "error"
         estado["texto"] = str(e)
+    finally:
+        for ruta in [ruta_video, ruta_audio]:
+            if os.path.exists(ruta):
+                os.remove(ruta)
 
 
 if __name__ == "__main__":
