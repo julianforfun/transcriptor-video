@@ -29,20 +29,23 @@
       transition: all 0.2s;
       background: #1e1e2e;
     }
-    #zona-drop.drag-over {
-      border-color: #89b4fa;
-      background: #1a1a2e;
-    }
+    #zona-drop.drag-over { border-color: #89b4fa; background: #1a1a2e; }
     #zona-drop .icono { font-size: 48px; margin-bottom: 12px; }
     #zona-drop p { color: #a6adc8; font-size: 15px; }
     #zona-drop strong { color: #cdd6f4; }
     #file-input { display: none; }
 
-    #nombre-archivo {
-      margin-top: 12px;
-      color: #a6e3a1;
-      font-size: 14px;
-      min-height: 20px;
+    #nombre-archivo { margin-top: 12px; color: #a6e3a1; font-size: 14px; min-height: 20px; }
+
+    #progress-bar-container {
+      width: 100%; max-width: 640px;
+      background: #313244; border-radius: 8px;
+      margin-top: 12px; display: none; height: 8px;
+    }
+    #progress-bar {
+      height: 8px; background: #89b4fa;
+      border-radius: 8px; width: 0%;
+      transition: width 0.3s;
     }
 
     button#btn-transcribir {
@@ -59,43 +62,25 @@
     }
     button#btn-transcribir:disabled { opacity: 0.4; cursor: not-allowed; }
 
-    #estado {
-      margin-top: 16px;
-      font-size: 14px;
-      color: #f9e2af;
-      min-height: 20px;
-    }
+    #estado { margin-top: 16px; font-size: 14px; color: #f9e2af; min-height: 20px; }
 
     #resultado {
-      margin-top: 24px;
-      width: 100%;
-      max-width: 640px;
-      background: #1e1e2e;
-      border-radius: 12px;
-      padding: 20px;
-      display: none;
+      margin-top: 24px; width: 100%; max-width: 640px;
+      background: #1e1e2e; border-radius: 12px;
+      padding: 20px; display: none;
     }
     #resultado h2 { font-size: 16px; color: #89b4fa; margin-bottom: 12px; }
     #texto-transcripcion {
-      white-space: pre-wrap;
-      font-size: 14px;
-      line-height: 1.7;
-      color: #cdd6f4;
-      max-height: 400px;
-      overflow-y: auto;
+      white-space: pre-wrap; font-size: 14px; line-height: 1.7;
+      color: #cdd6f4; max-height: 400px; overflow-y: auto;
     }
     #btn-copiar {
-      margin-top: 16px;
-      padding: 8px 20px;
-      background: #313244;
-      color: #cdd6f4;
-      border: none;
-      border-radius: 8px;
-      cursor: pointer;
-      font-size: 13px;
+      margin-top: 16px; padding: 8px 20px;
+      background: #313244; color: #cdd6f4;
+      border: none; border-radius: 8px;
+      cursor: pointer; font-size: 13px;
     }
     #btn-copiar:hover { background: #45475a; }
-    #ruta-guardado { margin-top: 8px; font-size: 12px; color: #6c7086; }
   </style>
 </head>
 <body>
@@ -110,6 +95,7 @@
   </div>
 
   <div id="nombre-archivo"></div>
+  <div id="progress-bar-container"><div id="progress-bar"></div></div>
   <button id="btn-transcribir" disabled>Transcribir</button>
   <div id="estado"></div>
 
@@ -117,7 +103,6 @@
     <h2>Transcripción</h2>
     <div id="texto-transcripcion"></div>
     <button id="btn-copiar">Copiar texto</button>
-    <div id="ruta-guardado"></div>
   </div>
 
   <script>
@@ -129,7 +114,8 @@
     const resultado = document.getElementById("resultado");
     const textoDiv = document.getElementById("texto-transcripcion");
     const btnCopiar = document.getElementById("btn-copiar");
-    const rutaGuardado = document.getElementById("ruta-guardado");
+    const progressContainer = document.getElementById("progress-bar-container");
+    const progressBar = document.getElementById("progress-bar");
 
     let archivoSeleccionado = null;
 
@@ -139,8 +125,7 @@
     zona.addEventListener("drop", (e) => {
       e.preventDefault();
       zona.classList.remove("drag-over");
-      const archivo = e.dataTransfer.files[0];
-      if (archivo) seleccionarArchivo(archivo);
+      if (e.dataTransfer.files[0]) seleccionarArchivo(e.dataTransfer.files[0]);
     });
     fileInput.addEventListener("change", () => {
       if (fileInput.files[0]) seleccionarArchivo(fileInput.files[0]);
@@ -157,34 +142,62 @@
     btnTranscribir.addEventListener("click", async () => {
       if (!archivoSeleccionado) return;
       btnTranscribir.disabled = true;
-      estadoDiv.textContent = "Subiendo archivo...";
+      resultado.style.display = "none";
 
-      const form = new FormData();
-      form.append("video", archivoSeleccionado);
+      const sessionId = crypto.randomUUID();
+      const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB por chunk
+      const totalChunks = Math.ceil(archivoSeleccionado.size / CHUNK_SIZE);
 
-      await fetch("/transcribir", { method: "POST", body: form });
+      progressContainer.style.display = "block";
+      progressBar.style.width = "0%";
+
+      // Subir en chunks
+      for (let i = 0; i < totalChunks; i++) {
+        const inicio = i * CHUNK_SIZE;
+        const chunk = archivoSeleccionado.slice(inicio, inicio + CHUNK_SIZE);
+        const form = new FormData();
+        form.append("session_id", sessionId);
+        form.append("chunk_index", i);
+        form.append("total_chunks", totalChunks);
+        form.append("nombre", archivoSeleccionado.name);
+        form.append("chunk", chunk);
+
+        estadoDiv.textContent = `Subiendo parte ${i+1} de ${totalChunks}...`;
+        await fetch("/chunk", { method: "POST", body: form });
+        progressBar.style.width = ((i + 1) / totalChunks * 50) + "%";
+      }
+
       estadoDiv.textContent = "Procesando...";
-      pollEstado();
+      pollEstado(sessionId);
     });
 
-    function pollEstado() {
+    function pollEstado(sessionId) {
       const intervalo = setInterval(async () => {
-        const res = await fetch("/estado");
+        const res = await fetch("/estado/" + sessionId);
         const data = await res.json();
-        estadoDiv.textContent = data.progreso;
+        estadoDiv.textContent = data.estado;
 
-        if (data.progreso.startsWith("listo")) {
+        if (data.estado === "listo") {
           clearInterval(intervalo);
+          progressBar.style.width = "100%";
+          setTimeout(() => progressContainer.style.display = "none", 500);
           btnTranscribir.disabled = false;
           textoDiv.textContent = data.texto;
           resultado.style.display = "block";
-          if (data.ruta) rutaGuardado.textContent = "Guardado en: " + data.ruta;
-        } else if (data.progreso === "error") {
+        } else if (data.estado === "error") {
           clearInterval(intervalo);
+          progressContainer.style.display = "none";
           btnTranscribir.disabled = false;
           estadoDiv.textContent = "Error: " + data.texto;
+        } else {
+          // Actualizar barra durante procesamiento
+          const match = data.estado.match(/parte (\d+)\/(\d+)/);
+          if (match) {
+            const pct = 50 + (parseInt(match[1]) / parseInt(match[2])) * 50;
+            progressBar.style.width = pct + "%";
+          }
         }
-      }, 1500);
+      }, 2000);
     }
 
     btnCopiar.addEventListener("click", () => {

@@ -2,17 +2,19 @@
 import os
 import subprocess
 import threading
+import uuid
 from flask import Flask, request, jsonify, render_template
 from openai import OpenAI
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # 500MB
+app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 UPLOAD_FOLDER = "/tmp/transcripciones"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-estado = {"progreso": "esperando", "texto": "", "archivo": ""}
+LIMITE_BYTES = 24 * 1024 * 1024  # 24MB
+sesiones = {}  # { session_id: { "estado": ..., "texto": ... } }
 
 
 @app.route("/")
@@ -20,90 +22,93 @@ def index():
     return render_template("index.html")
 
 
-@app.route("/transcribir", methods=["POST"])
-def transcribir():
-    if "video" not in request.files:
-        return jsonify({"error": "No se recibió ningún archivo"}), 400
+@app.route("/chunk", methods=["POST"])
+def recibir_chunk():
+    session_id = request.form.get("session_id")
+    chunk_index = int(request.form.get("chunk_index"))
+    total_chunks = int(request.form.get("total_chunks"))
+    nombre = request.form.get("nombre", "archivo")
+    chunk = request.files["chunk"]
 
-    archivo = request.files["video"]
-    nombre = archivo.filename
-    ruta_video = os.path.join(UPLOAD_FOLDER, nombre)
-    archivo.save(ruta_video)
+    carpeta = os.path.join(UPLOAD_FOLDER, session_id)
+    os.makedirs(carpeta, exist_ok=True)
+    chunk.save(os.path.join(carpeta, f"chunk_{chunk_index}"))
 
-    estado["progreso"] = "procesando"
-    estado["texto"] = ""
-    estado["archivo"] = nombre
+    if session_id not in sesiones:
+        sesiones[session_id] = {"estado": "subiendo...", "texto": "", "total": total_chunks, "recibidos": 0}
 
-    hilo = threading.Thread(target=_procesar, args=(ruta_video,), daemon=True)
-    hilo.start()
+    sesiones[session_id]["recibidos"] += 1
+
+    # Si llegaron todos los chunks, procesar
+    if sesiones[session_id]["recibidos"] == total_chunks:
+        sesiones[session_id]["estado"] = "procesando..."
+        nombre_base = os.path.splitext(nombre)[0]
+        ruta_completa = os.path.join(carpeta, nombre_base + ".orig")
+
+        # Ensamblar archivo
+        with open(ruta_completa, "wb") as f:
+            for i in range(total_chunks):
+                with open(os.path.join(carpeta, f"chunk_{i}"), "rb") as c:
+                    f.write(c.read())
+
+        hilo = threading.Thread(target=_procesar, args=(session_id, ruta_completa, carpeta), daemon=True)
+        hilo.start()
 
     return jsonify({"ok": True})
 
 
-@app.route("/estado")
-def ver_estado():
-    return jsonify(estado)
+@app.route("/estado/<session_id>")
+def ver_estado(session_id):
+    return jsonify(sesiones.get(session_id, {"estado": "no encontrado", "texto": ""}))
 
 
-LIMITE_BYTES = 24 * 1024 * 1024  # 24MB para tener margen
-
-
-def _procesar(ruta_video):
-    archivos_temp = [ruta_video]
+def _procesar(session_id, ruta_video, carpeta):
+    ruta_audio = ruta_video + ".mp3"
     try:
-        # Comprimir audio
-        ruta_audio = ruta_video + ".mp3"
-        archivos_temp.append(ruta_audio)
-        estado["progreso"] = "comprimiendo audio..."
+        sesiones[session_id]["estado"] = "comprimiendo audio..."
         subprocess.run(
             ["ffmpeg", "-i", ruta_video, "-vn", "-ar", "16000", "-ac", "1", "-b:a", "16k", ruta_audio, "-y"],
             capture_output=True
         )
 
-        # Dividir en partes si supera el límite
-        partes = _dividir_si_necesario(ruta_audio, archivos_temp)
+        partes = _dividir_si_necesario(session_id, ruta_audio, carpeta)
 
-        # Transcribir cada parte
         textos = []
         for i, parte in enumerate(partes):
-            estado["progreso"] = f"transcribiendo parte {i+1}/{len(partes)}..."
+            sesiones[session_id]["estado"] = f"transcribiendo parte {i+1}/{len(partes)}..."
             with open(parte, "rb") as f:
                 resultado = client.audio.transcriptions.create(model="whisper-1", file=f)
             textos.append(resultado.text.strip())
 
-        estado["progreso"] = "listo"
-        estado["texto"] = " ".join(textos)
+        sesiones[session_id]["estado"] = "listo"
+        sesiones[session_id]["texto"] = " ".join(textos)
 
     except Exception as e:
-        estado["progreso"] = "error"
-        estado["texto"] = str(e)
+        sesiones[session_id]["estado"] = "error"
+        sesiones[session_id]["texto"] = str(e)
     finally:
-        for ruta in archivos_temp:
-            if os.path.exists(ruta):
-                os.remove(ruta)
+        import shutil
+        shutil.rmtree(carpeta, ignore_errors=True)
 
 
-def _dividir_si_necesario(ruta_audio, archivos_temp):
+def _dividir_si_necesario(session_id, ruta_audio, carpeta):
     if os.path.getsize(ruta_audio) <= LIMITE_BYTES:
         return [ruta_audio]
 
-    # Obtener duración total
     resultado = subprocess.run(
         ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
          "-of", "default=noprint_wrappers=1:nokey=1", ruta_audio],
         capture_output=True, text=True
     )
     duracion = float(resultado.stdout.strip())
-    partes_necesarias = int(os.path.getsize(ruta_audio) / LIMITE_BYTES) + 1
-    duracion_parte = duracion / partes_necesarias
+    n_partes = int(os.path.getsize(ruta_audio) / LIMITE_BYTES) + 1
+    dur_parte = duracion / n_partes
 
     partes = []
-    for i in range(partes_necesarias):
-        inicio = i * duracion_parte
-        ruta_parte = ruta_audio + f"_parte{i}.mp3"
-        archivos_temp.append(ruta_parte)
+    for i in range(n_partes):
+        ruta_parte = os.path.join(carpeta, f"parte_{i}.mp3")
         subprocess.run(
-            ["ffmpeg", "-i", ruta_audio, "-ss", str(inicio), "-t", str(duracion_parte),
+            ["ffmpeg", "-i", ruta_audio, "-ss", str(i * dur_parte), "-t", str(dur_parte),
              "-c", "copy", ruta_parte, "-y"],
             capture_output=True
         )
