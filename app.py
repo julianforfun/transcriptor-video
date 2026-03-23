@@ -50,7 +50,7 @@ def _procesar(ruta_video):
     try:
         estado["progreso"] = "comprimiendo audio..."
         subprocess.run(
-            ["ffmpeg", "-i", ruta_video, "-vn", "-ar", "16000", "-ac", "1", "-b:a", "32k", ruta_audio, "-y"],
+            ["ffmpeg", "-i", ruta_video, "-vn", "-ar", "16000", "-ac", "1", "-b:a", "16k", ruta_audio, "-y"],
             capture_output=True
         )
 
