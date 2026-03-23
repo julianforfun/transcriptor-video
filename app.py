@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 import os
-import subprocess
 import threading
-import webbrowser
 from flask import Flask, request, jsonify, render_template
+from openai import OpenAI
 
 app = Flask(__name__)
-UPLOAD_FOLDER = os.path.expanduser("~/Desktop/transcripciones")
+client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+
+UPLOAD_FOLDER = "/tmp/transcripciones"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 estado = {"progreso": "esperando", "texto": "", "archivo": ""}
@@ -31,7 +32,7 @@ def transcribir():
     estado["texto"] = ""
     estado["archivo"] = nombre
 
-    hilo = threading.Thread(target=_procesar, args=(ruta_video, nombre), daemon=True)
+    hilo = threading.Thread(target=_procesar, args=(ruta_video,), daemon=True)
     hilo.start()
 
     return jsonify({"ok": True})
@@ -42,38 +43,23 @@ def ver_estado():
     return jsonify(estado)
 
 
-def _procesar(ruta_video, nombre):
-    nombre_base = os.path.splitext(ruta_video)[0]
-    ruta_audio = nombre_base + "_temp.mp3"
-    ruta_txt = nombre_base + "_transcripcion.txt"
-
+def _procesar(ruta_video):
     try:
-        estado["progreso"] = "extrayendo audio..."
-        resultado = subprocess.run(
-            ["ffmpeg", "-i", ruta_video, "-q:a", "0", "-map", "a", ruta_audio, "-y"],
-            capture_output=True, text=True
-        )
-        if resultado.returncode != 0:
-            estado["progreso"] = "error"
-            estado["texto"] = "No se pudo extraer el audio del video."
-            return
-
         estado["progreso"] = "transcribiendo..."
-        import whisper
-        modelo = whisper.load_model("base")
-        resultado_whisper = modelo.transcribe(ruta_audio)
-        texto = resultado_whisper["text"].strip()
-        idioma = resultado_whisper.get("language", "desconocido")
 
-        with open(ruta_txt, "w", encoding="utf-8") as f:
-            f.write(texto)
+        with open(ruta_video, "rb") as f:
+            resultado = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=f,
+            )
 
-        if os.path.exists(ruta_audio):
-            os.remove(ruta_audio)
+        texto = resultado.text.strip()
 
-        estado["progreso"] = f"listo | idioma: {idioma}"
+        if os.path.exists(ruta_video):
+            os.remove(ruta_video)
+
+        estado["progreso"] = "listo"
         estado["texto"] = texto
-        estado["ruta"] = ruta_txt
 
     except Exception as e:
         estado["progreso"] = "error"
@@ -81,5 +67,5 @@ def _procesar(ruta_video, nombre):
 
 
 if __name__ == "__main__":
-    webbrowser.open("http://localhost:5000")
-    app.run(debug=False)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
