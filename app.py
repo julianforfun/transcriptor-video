@@ -8,7 +8,7 @@ from openai import OpenAI
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024
-client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=600)
 
 UPLOAD_FOLDER = "/tmp/transcripciones"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
