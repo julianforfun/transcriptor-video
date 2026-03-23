@@ -6,6 +6,7 @@ from flask import Flask, request, jsonify, render_template
 from openai import OpenAI
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # 500MB
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 UPLOAD_FOLDER = "/tmp/transcripciones"
