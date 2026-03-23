@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Transcriptor de Video</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0f0f17;
+      color: #cdd6f4;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 40px 20px;
+    }
+    h1 { font-size: 28px; margin-bottom: 8px; color: #89b4fa; }
+    p.sub { color: #a6adc8; margin-bottom: 32px; font-size: 14px; }
+
+    #zona-drop {
+      width: 100%;
+      max-width: 640px;
+      border: 2px dashed #45475a;
+      border-radius: 16px;
+      padding: 60px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s;
+      background: #1e1e2e;
+    }
+    #zona-drop.drag-over {
+      border-color: #89b4fa;
+      background: #1a1a2e;
+    }
+    #zona-drop .icono { font-size: 48px; margin-bottom: 12px; }
+    #zona-drop p { color: #a6adc8; font-size: 15px; }
+    #zona-drop strong { color: #cdd6f4; }
+    #file-input { display: none; }
+
+    #nombre-archivo {
+      margin-top: 12px;
+      color: #a6e3a1;
+      font-size: 14px;
+      min-height: 20px;
+    }
+
+    button#btn-transcribir {
+      margin-top: 20px;
+      padding: 12px 36px;
+      background: #89b4fa;
+      color: #1e1e2e;
+      border: none;
+      border-radius: 10px;
+      font-size: 16px;
+      font-weight: bold;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+    button#btn-transcribir:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    #estado {
+      margin-top: 16px;
+      font-size: 14px;
+      color: #f9e2af;
+      min-height: 20px;
+    }
+
+    #resultado {
+      margin-top: 24px;
+      width: 100%;
+      max-width: 640px;
+      background: #1e1e2e;
+      border-radius: 12px;
+      padding: 20px;
+      display: none;
+    }
+    #resultado h2 { font-size: 16px; color: #89b4fa; margin-bottom: 12px; }
+    #texto-transcripcion {
+      white-space: pre-wrap;
+      font-size: 14px;
+      line-height: 1.7;
+      color: #cdd6f4;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+    #btn-copiar {
+      margin-top: 16px;
+      padding: 8px 20px;
+      background: #313244;
+      color: #cdd6f4;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    #btn-copiar:hover { background: #45475a; }
+    #ruta-guardado { margin-top: 8px; font-size: 12px; color: #6c7086; }
+  </style>
+</head>
+<body>
+  <h1>Transcriptor de Video</h1>
+  <p class="sub">Arrastrá tu video y obtené la transcripción en segundos</p>
+
+  <div id="zona-drop">
+    <div class="icono">🎬</div>
+    <p><strong>Arrastrá tu video aquí</strong></p>
+    <p>o hacé clic para buscar</p>
+    <input type="file" id="file-input" accept="video/*" />
+  </div>
+
+  <div id="nombre-archivo"></div>
+  <button id="btn-transcribir" disabled>Transcribir</button>
+  <div id="estado"></div>
+
+  <div id="resultado">
+    <h2>Transcripción</h2>
+    <div id="texto-transcripcion"></div>
+    <button id="btn-copiar">Copiar texto</button>
+    <div id="ruta-guardado"></div>
+  </div>
+
+  <script>
+    const zona = document.getElementById("zona-drop");
+    const fileInput = document.getElementById("file-input");
+    const nombreArchivo = document.getElementById("nombre-archivo");
+    const btnTranscribir = document.getElementById("btn-transcribir");
+    const estadoDiv = document.getElementById("estado");
+    const resultado = document.getElementById("resultado");
+    const textoDiv = document.getElementById("texto-transcripcion");
+    const btnCopiar = document.getElementById("btn-copiar");
+    const rutaGuardado = document.getElementById("ruta-guardado");
+
+    let archivoSeleccionado = null;
+
+    zona.addEventListener("click", () => fileInput.click());
+    zona.addEventListener("dragover", (e) => { e.preventDefault(); zona.classList.add("drag-over"); });
+    zona.addEventListener("dragleave", () => zona.classList.remove("drag-over"));
+    zona.addEventListener("drop", (e) => {
+      e.preventDefault();
+      zona.classList.remove("drag-over");
+      const archivo = e.dataTransfer.files[0];
+      if (archivo) seleccionarArchivo(archivo);
+    });
+    fileInput.addEventListener("change", () => {
+      if (fileInput.files[0]) seleccionarArchivo(fileInput.files[0]);
+    });
+
+    function seleccionarArchivo(archivo) {
+      archivoSeleccionado = archivo;
+      nombreArchivo.textContent = "📄 " + archivo.name;
+      btnTranscribir.disabled = false;
+      estadoDiv.textContent = "";
+      resultado.style.display = "none";
+    }
+
+    btnTranscribir.addEventListener("click", async () => {
+      if (!archivoSeleccionado) return;
+      btnTranscribir.disabled = true;
+      estadoDiv.textContent = "Subiendo archivo...";
+
+      const form = new FormData();
+      form.append("video", archivoSeleccionado);
+
+      await fetch("/transcribir", { method: "POST", body: form });
+      estadoDiv.textContent = "Procesando...";
+      pollEstado();
+    });
+
+    function pollEstado() {
+      const intervalo = setInterval(async () => {
+        const res = await fetch("/estado");
+        const data = await res.json();
+        estadoDiv.textContent = data.progreso;
+
+        if (data.progreso.startsWith("listo")) {
+          clearInterval(intervalo);
+          btnTranscribir.disabled = false;
+          textoDiv.textContent = data.texto;
+          resultado.style.display = "block";
+          if (data.ruta) rutaGuardado.textContent = "Guardado en: " + data.ruta;
+        } else if (data.progreso === "error") {
+          clearInterval(intervalo);
+          btnTranscribir.disabled = false;
+          estadoDiv.textContent = "Error: " + data.texto;
+        }
+      }, 1500);
+    }
+
+    btnCopiar.addEventListener("click", () => {
+      navigator.clipboard.writeText(textoDiv.textContent);
+      btnCopiar.textContent = "¡Copiado!";
+      setTimeout(() => btnCopiar.textContent = "Copiar texto", 2000);
+    });
+  </script>
+</body>
+</html>
